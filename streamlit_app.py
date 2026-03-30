@@ -336,7 +336,8 @@ st.markdown("""
     .stApp { background-color: #0a0a0a; }
 
     .banner { text-align: center; padding: 20px 0 8px; }
-    .banner img { height: 50px; margin-bottom: 8px; }
+    .banner img { height: 50px; margin-bottom: 4px; }
+    .banner-name { color: #94a3b8; font-size: 13px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase; }
 
     .title-wrap { text-align: center; padding: 0 0 8px; }
     .title-wrap h1 {
@@ -391,6 +392,7 @@ if os.path.exists(LOGO_PATH):
     st.markdown(f"""
     <div class="banner">
         <img src="data:image/png;base64,{logo_b64}" alt="Automaxion">
+        <div class="banner-name">Automaxion LLC</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -407,18 +409,6 @@ with st.spinner("Loading DINOv2 model..."):
     load_backbone()
     _, _, loo_accuracy = load_dinov2_model()
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-total_images = len([f for f in os.listdir(GOOD_DIR) if f.lower().endswith(VALID_EXT)]) + \
-               len([f for f in os.listdir(BAD_DIR) if f.lower().endswith(VALID_EXT)])
-
-st.markdown(f"""
-<div class="stat-bar">
-    <div class="stat-chip">Model: <b>DINOv2</b></div>
-    <div class="stat-chip">Accuracy: <b>{loo_accuracy:.0%}</b></div>
-    <div class="stat-chip">Dataset: <b>{total_images} images</b></div>
-    <div class="stat-chip">Device: <b>{device}</b></div>
-</div>
-""", unsafe_allow_html=True)
 
 # Initialize history
 if 'history' not in st.session_state:
