@@ -5,6 +5,7 @@ Run:  streamlit run streamlit_app.py
 """
 
 import os
+import base64
 import cv2
 import numpy as np
 import torch
@@ -28,8 +29,62 @@ GOOD_DIR = os.path.join(BASE_DIR, "data", "reference")
 BAD_DIR = os.path.join(BASE_DIR, "data", "defective")
 DINOV2_CACHE = os.path.join(BASE_DIR, "hexa_sun_model.pkl")
 OPENCV_CACHE = os.path.join(BASE_DIR, "hexa_sun_opencv_model.pkl")
+LOGO_PATH = os.path.join(BASE_DIR, "automaxion-logo.png")
 VALID_EXT = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp')
 IMG_SIZE = 224
+
+USERNAME = "automaxiondeveloper"
+PASSWORD = "automaxion2026"
+
+
+# ============================================================
+# AUTH
+# ============================================================
+def check_login():
+    if st.session_state.get('authenticated'):
+        return True
+
+    st.set_page_config(page_title="Login - Faulty Patch Detection", page_icon="🔒", layout="centered")
+
+    st.markdown("""
+    <style>
+        .main { background-color: #0a0a0a; }
+        .stApp { background-color: #0a0a0a; }
+        .login-wrap { max-width: 400px; margin: 60px auto; text-align: center; }
+        .login-wrap h2 { color: #e2e8f0; margin-bottom: 4px; }
+        .login-wrap p { color: #64748b; font-size: 14px; margin-bottom: 24px; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Logo
+    if os.path.exists(LOGO_PATH):
+        logo_b64 = base64.b64encode(open(LOGO_PATH, 'rb').read()).decode()
+        st.markdown(f"""
+        <div style="text-align:center; margin-top:40px;">
+            <img src="data:image/png;base64,{logo_b64}" style="height:60px; margin-bottom:16px;">
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="login-wrap">
+        <h2>Faulty Patch Detection</h2>
+        <p>Sign in to access the detection system</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign In", use_container_width=True)
+
+        if submitted:
+            if username == USERNAME and password == PASSWORD:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Invalid username or password")
+
+    return False
 
 
 # ============================================================
@@ -111,36 +166,29 @@ def predict_dinov2(pil_image):
 
 
 # ============================================================
-# OPENCV DETECTOR
+# OPENCV DETECTOR (kept for future use)
 # ============================================================
 def extract_opencv_features(pil_image):
     img = np.array(pil_image)
     img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
     img = cv2.resize(img, (IMG_SIZE, IMG_SIZE))
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
     features = []
-
-    # Color histogram (HSV)
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     for ch in range(3):
         hist = cv2.calcHist([hsv], [ch], None, [32],
                             [0, 180] if ch == 0 else [0, 256])
         hist = cv2.normalize(hist, hist).flatten()
         features.extend(hist)
-
-    # Edge features (Canny)
     edges = cv2.Canny(gray, 50, 150)
     features.append(np.sum(edges > 0) / edges.size)
     grid = 4
     h, w = edges.shape
-    ch, cw = h // grid, w // grid
+    ch_s, cw_s = h // grid, w // grid
     for i in range(grid):
         for j in range(grid):
-            cell = edges[i*ch:(i+1)*ch, j*cw:(j+1)*cw]
+            cell = edges[i*ch_s:(i+1)*ch_s, j*cw_s:(j+1)*cw_s]
             features.append(np.sum(cell > 0) / cell.size)
-
-    # Texture features
     lap = cv2.Laplacian(gray, cv2.CV_64F)
     features.extend([lap.var(), lap.mean()])
     sobelx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
@@ -151,8 +199,6 @@ def extract_opencv_features(pil_image):
                      float(gray.min()), float(gray.max())])
     for q in [gray[:h//2, :w//2], gray[:h//2, w//2:], gray[h//2:, :w//2], gray[h//2:, w//2:]]:
         features.extend([q.mean(), q.std()])
-
-    # ORB keypoints
     orb = cv2.ORB_create(nfeatures=100)
     kps, descs = orb.detectAndCompute(gray, None)
     features.append(len(kps))
@@ -165,8 +211,6 @@ def extract_opencv_features(pil_image):
             features.extend([0, 0])
     else:
         features.extend([0, 0, 0, 0, 0, 0])
-
-    # GLCM-like
     h_diff = np.abs(gray[:, 1:].astype(float) - gray[:, :-1].astype(float))
     v_diff = np.abs(gray[1:, :].astype(float) - gray[:-1, :].astype(float))
     d_diff = np.abs(gray[1:, 1:].astype(float) - gray[:-1, :-1].astype(float))
@@ -176,7 +220,6 @@ def extract_opencv_features(pil_image):
     hist_g = hist_g / hist_g.sum()
     features.append(-np.sum(hist_g * np.log2(hist_g + 1e-10)))
     features.append(np.sum(hist_g**2))
-
     return np.array(features, dtype=np.float64)
 
 
@@ -205,10 +248,7 @@ def build_opencv_model():
         features.append(extract_opencv_features(img))
         progress.progress((i + 1) / len(paths), text=f"OpenCV features... {i+1}/{len(paths)}")
     progress.empty()
-
     X, y = np.array(features), np.array(labels)
-
-    # LOO with SVM
     loo = LeaveOneOut()
     correct = 0
     for tr, te in loo.split(X):
@@ -217,15 +257,12 @@ def build_opencv_model():
         clf.fit(sc.fit_transform(X[tr]), y[tr])
         correct += (clf.predict(sc.transform(X[te]))[0] == y[te[0]])
     loo_acc = correct / len(y)
-
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     clf = SVC(kernel='rbf', probability=True, C=10, gamma='scale')
     clf.fit(X_scaled, y)
-
     cache = {
-        'features': X, 'labels': y, 'names': names,
-        'loo_accuracy': loo_acc,
+        'features': X, 'labels': y, 'names': names, 'loo_accuracy': loo_acc,
         'scaler_mean': scaler.mean_, 'scaler_scale': scaler.scale_,
     }
     with open(OPENCV_CACHE, 'wb') as f:
@@ -280,11 +317,17 @@ def _find_best_k(X, y):
 # ============================================================
 # STREAMLIT UI
 # ============================================================
+
+# Login gate — must pass before anything renders
+if not check_login():
+    st.stop()
+
+# Past this point, user is authenticated
 st.set_page_config(
-    page_title="Faulty Patch Detection",
+    page_title="Faulty Patch Detection - Automaxion",
     page_icon="🔍",
     layout="centered",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed"
 )
 
 st.markdown("""
@@ -292,7 +335,10 @@ st.markdown("""
     .main { background-color: #0a0a0a; }
     .stApp { background-color: #0a0a0a; }
 
-    .title-wrap { text-align: center; padding: 16px 0 8px; }
+    .banner { text-align: center; padding: 20px 0 8px; }
+    .banner img { height: 50px; margin-bottom: 8px; }
+
+    .title-wrap { text-align: center; padding: 0 0 8px; }
     .title-wrap h1 {
         font-size: 36px; font-weight: 800;
         background: linear-gradient(135deg, #60a5fa, #a78bfa);
@@ -323,36 +369,30 @@ st.markdown("""
     .metric-item .val { font-size: 22px; font-weight: 700; color: #e2e8f0; }
     .metric-item .lbl { font-size: 11px; color: #4b5563; text-transform: uppercase; }
 
-    .history-item {
-        display: flex; align-items: center; gap: 10px;
-        padding: 10px 14px; background: #111827; border: 1px solid #1e293b;
-        border-radius: 8px; margin-bottom: 4px; font-size: 13px;
+    .gallery-card {
+        background: #111827; border: 2px solid #1e293b; border-radius: 12px;
+        overflow: hidden; text-align: center; padding-bottom: 8px;
     }
-    .history-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-    .history-dot.faulty { background: #ef4444; }
-    .history-dot.passed { background: #22c55e; }
-    .history-fname { flex: 1; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .history-verdict { font-weight: 700; font-size: 12px; }
-    .history-verdict.faulty { color: #f87171; }
-    .history-verdict.passed { color: #4ade80; }
-    .history-meta { color: #374151; font-size: 12px; }
-
-    .model-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-    .model-badge.dinov2 { background: #1e1b4b; color: #a78bfa; border: 1px solid #4c1d95; }
-    .model-badge.opencv { background: #14291a; color: #4ade80; border: 1px solid #166534; }
+    .gallery-card.faulty { border-color: #7f1d1d; }
+    .gallery-card.passed { border-color: #14532d; }
+    .gallery-card img { width: 100%; aspect-ratio: 1; object-fit: cover; }
+    .gallery-verdict { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; margin-top: 6px; }
+    .gallery-verdict.faulty { color: #f87171; }
+    .gallery-verdict.passed { color: #4ade80; }
+    .gallery-meta { font-size: 10px; color: #4b5563; margin-top: 2px; }
+    .gallery-fname { font-size: 10px; color: #64748b; margin-top: 2px; padding: 0 6px;
+                      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 """, unsafe_allow_html=True)
 
-# Sidebar — model switch
-st.sidebar.markdown("### Model Selection")
-model_choice = st.sidebar.radio(
-    "Choose detection engine:",
-    ["DINOv2 (Deep Learning)", "OpenCV (Classical CV)"],
-    index=0,
-    help="DINOv2 uses a pre-trained neural network. OpenCV uses handcrafted features (histograms, edges, textures)."
-)
-use_dinov2 = model_choice.startswith("DINOv2")
-
+# Banner with logo
+if os.path.exists(LOGO_PATH):
+    logo_b64 = base64.b64encode(open(LOGO_PATH, 'rb').read()).decode()
+    st.markdown(f"""
+    <div class="banner">
+        <img src="data:image/png;base64,{logo_b64}" alt="Automaxion">
+    </div>
+    """, unsafe_allow_html=True)
 
 # Title
 st.markdown("""
@@ -362,18 +402,10 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Load selected model
-if use_dinov2:
-    with st.spinner("Loading DINOv2 model..."):
-        load_backbone()
-        _, _, loo_accuracy = load_dinov2_model()
-    model_name = "DINOv2"
-    badge_class = "dinov2"
-else:
-    with st.spinner("Loading OpenCV model..."):
-        _, _, loo_accuracy = load_opencv_model()
-    model_name = "OpenCV"
-    badge_class = "opencv"
+# Load DINOv2 (default)
+with st.spinner("Loading DINOv2 model..."):
+    load_backbone()
+    _, _, loo_accuracy = load_dinov2_model()
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 total_images = len([f for f in os.listdir(GOOD_DIR) if f.lower().endswith(VALID_EXT)]) + \
@@ -381,7 +413,7 @@ total_images = len([f for f in os.listdir(GOOD_DIR) if f.lower().endswith(VALID_
 
 st.markdown(f"""
 <div class="stat-bar">
-    <div class="stat-chip"><span class="model-badge {badge_class}">{model_name}</span></div>
+    <div class="stat-chip">Model: <b>DINOv2</b></div>
     <div class="stat-chip">Accuracy: <b>{loo_accuracy:.0%}</b></div>
     <div class="stat-chip">Dataset: <b>{total_images} images</b></div>
     <div class="stat-chip">Device: <b>{device}</b></div>
@@ -401,12 +433,7 @@ uploaded_file = st.file_uploader(
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file).convert("RGB")
-
-    if use_dinov2:
-        label, confidence, time_ms = predict_dinov2(image)
-    else:
-        label, confidence, time_ms = predict_opencv(image)
-
+    label, confidence, time_ms = predict_dinov2(image)
     is_faulty = label == 'defective'
 
     # Result
@@ -420,8 +447,7 @@ if uploaded_file is not None:
 
         st.markdown(f"""
         <div style="padding: 8px 0;">
-            <span class="model-badge {badge_class}">{model_name}</span>
-            <div class="verdict {vc}" style="margin-top:8px;">{vt}</div>
+            <div class="verdict {vc}">{vt}</div>
             <div class="result-label {vc}">{lt}</div>
             <div class="metric-row">
                 <div class="metric-item">
@@ -444,32 +470,50 @@ if uploaded_file is not None:
     </div>
     """, unsafe_allow_html=True)
 
-    # History
+    # Save image bytes for gallery thumbnail
+    import io
+    img_buf = io.BytesIO()
+    image.save(img_buf, format='JPEG', quality=60)
+    img_b64 = base64.b64encode(img_buf.getvalue()).decode()
+
     st.session_state.history.insert(0, {
         'name': uploaded_file.name,
         'label': label,
         'confidence': confidence,
         'time_ms': time_ms,
-        'model': model_name
+        'thumb': img_b64,
     })
-    if len(st.session_state.history) > 30:
+    if len(st.session_state.history) > 24:
         st.session_state.history.pop()
 
-# History
+# History gallery
 if st.session_state.history:
     st.markdown("#### Detection History")
-    for h in st.session_state.history:
-        is_f = h['label'] == 'defective'
-        dc = "faulty" if is_f else "passed"
-        vt = "FAULTY" if is_f else "OK"
-        m = h.get('model', '?')
-        st.markdown(f"""
-        <div class="history-item">
-            <div class="history-dot {dc}"></div>
-            <div class="history-fname">{h['name']}</div>
-            <div class="history-meta">{m}</div>
-            <div class="history-verdict {dc}">{vt}</div>
-            <div class="history-meta">{h['confidence']:.0%}</div>
-            <div class="history-meta">{h['time_ms']:.0f}ms</div>
-        </div>
-        """, unsafe_allow_html=True)
+    cols_per_row = 4
+    history = st.session_state.history
+    for row_start in range(0, len(history), cols_per_row):
+        cols = st.columns(cols_per_row)
+        for idx, col in enumerate(cols):
+            i = row_start + idx
+            if i >= len(history):
+                break
+            h = history[i]
+            is_f = h['label'] == 'defective'
+            vc = "faulty" if is_f else "passed"
+            vt = "FAULTY" if is_f else "OK"
+            with col:
+                st.markdown(f"""
+                <div class="gallery-card {vc}">
+                    <img src="data:image/jpeg;base64,{h['thumb']}">
+                    <div class="gallery-verdict {vc}">{vt}</div>
+                    <div class="gallery-meta">{h['confidence']:.0%} &middot; {h['time_ms']:.0f}ms</div>
+                    <div class="gallery-fname" title="{h['name']}">{h['name']}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+# Sidebar — logout
+st.sidebar.markdown("---")
+if st.sidebar.button("Logout"):
+    st.session_state.authenticated = False
+    st.session_state.history = []
+    st.rerun()
